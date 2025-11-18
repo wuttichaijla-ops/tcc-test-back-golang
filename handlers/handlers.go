@@ -3,118 +3,99 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strconv"
-	"sync"
+	"strings"
+	"test-back-golang/datasource"
 	"test-back-golang/models"
 
 	"github.com/gorilla/mux"
 )
 
-// In-memory storage (in production, use a database)
-var (
-	items    []models.Item
-	comments []models.Comment
-	mu       sync.RWMutex
-	itemID   int
-	commentID int
-)
+// ===== Product Code CRUD (16 chars, format XXXX-XXXX-XXXX-XXXX) =====
 
-func init() {
-	// Initialize with sample data
-	items = []models.Item{
-		{ID: 1, Name: "Sample Item 1", Description: "This is a sample item"},
-		{ID: 2, Name: "Sample Item 2", Description: "Another sample item"},
-	}
-	itemID = 3
+var productCodePattern = regexp.MustCompile(`^[A-Z0-9]{4}(-[A-Z0-9]{4}){3}$`)
 
-	comments = []models.Comment{
-		{ID: 1, Author: "Blend 285", Text: "have a good day", Avatar: "B"},
-	}
-	commentID = 2
+type ProductCodeRequest struct {
+	ProductName string `json:"product_name"`
+	Code        string `json:"code"`
 }
 
-// GetItems returns all items
-func GetItems(w http.ResponseWriter, r *http.Request) {
-	mu.RLock()
-	defer mu.RUnlock()
+// GetProductCodes returns all product codes
+func GetProductCodes(w http.ResponseWriter, r *http.Request) {
+	if datasource.DB == nil {
+		http.Error(w, "database not initialized", http.StatusInternalServerError)
+		return
+	}
+
+	var codes []models.ProductCode
+	if err := datasource.DB.Order("id asc").Find(&codes).Error; err != nil {
+		http.Error(w, "failed to fetch product codes", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(items)
+	json.NewEncoder(w).Encode(codes)
 }
 
-// AddItem adds a new item
-func AddItem(w http.ResponseWriter, r *http.Request) {
-	var newItem models.Item
-	if err := json.NewDecoder(r.Body).Decode(&newItem); err != nil {
+// CreateProductCode creates a new product code
+func CreateProductCode(w http.ResponseWriter, r *http.Request) {
+	if datasource.DB == nil {
+		http.Error(w, "database not initialized", http.StatusInternalServerError)
+		return
+	}
+
+	var req ProductCodeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	mu.Lock()
-	newItem.ID = itemID
-	itemID++
-	items = append(items, newItem)
-	mu.Unlock()
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(newItem)
-}
-
-// DeleteItem deletes an item by ID
-func DeleteItem(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	id, err := strconv.Atoi(vars["id"])
-	if err != nil {
-		http.Error(w, "Invalid item ID", http.StatusBadRequest)
+	if strings.TrimSpace(req.ProductName) == "" {
+		http.Error(w, "product_name is required", http.StatusBadRequest)
 		return
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
+	code := req.Code
+	code = strings.ToUpper(code)
 
-	found := false
-	for i, item := range items {
-		if item.ID == id {
-			items = append(items[:i], items[i+1:]...)
-			found = true
-			break
-		}
+	if !productCodePattern.MatchString(code) {
+		http.Error(w, "code must be 16 characters in format XXXX-XXXX-XXXX-XXXX (A-Z, 0-9)", http.StatusBadRequest)
+		return
 	}
 
-	if !found {
-		http.Error(w, "Item not found", http.StatusNotFound)
+	pc := models.ProductCode{
+		ProductName: req.ProductName,
+		Code:        code,
+	}
+	if err := datasource.DB.Create(&pc).Error; err != nil {
+		http.Error(w, "failed to create product code", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(pc)
+}
+
+// DeleteProductCode deletes a product code by ID
+func DeleteProductCode(w http.ResponseWriter, r *http.Request) {
+	if datasource.DB == nil {
+		http.Error(w, "database not initialized", http.StatusInternalServerError)
+		return
+	}
+
+	vars := mux.Vars(r)
+	id, err := strconv.Atoi(vars["id"])
+	if err != nil {
+		http.Error(w, "Invalid ID", http.StatusBadRequest)
+		return
+	}
+
+	if err := datasource.DB.Delete(&models.ProductCode{}, id).Error; err != nil {
+		http.Error(w, "failed to delete product code", http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
-
-// AddComment adds a new comment
-func AddComment(w http.ResponseWriter, r *http.Request) {
-	var newComment models.Comment
-	if err := json.NewDecoder(r.Body).Decode(&newComment); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	mu.Lock()
-	newComment.ID = commentID
-	commentID++
-	comments = append(comments, newComment)
-	mu.Unlock()
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(newComment)
-}
-
-// GetComments returns all comments
-func GetComments(w http.ResponseWriter, r *http.Request) {
-	mu.RLock()
-	defer mu.RUnlock()
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(comments)
-}
-
